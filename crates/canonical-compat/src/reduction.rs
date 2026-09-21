@@ -1,5 +1,5 @@
 use crate::*;
-use canonical_core::memory::*;
+use crate::ir::BindMap;
 use std::collections::{HashMap, HashSet};
 
 struct Build {
@@ -88,7 +88,7 @@ fn get_children(builds: &Vec<(&mut Build, &IRSpine, ES, Vec<Position>)>) -> Vec<
 }
 
 fn get_bindings(build: &mut Build, term: &IRSpine, es: ES, position: &[Position],
-        binds: &mut HashMap<W<Bind>, Vec<Position>>, _tokens: &mut Vec<Token>) -> S<Indexed<S<Bind>>> {
+        binds: &mut BindMap, _tokens: &mut Vec<Token>) -> S<Indexed<S<Bind>>> {
     let mut params: Vec<S<Bind>> = Vec::new();
     let mut found = false;
 
@@ -116,7 +116,7 @@ fn get_bindings(build: &mut Build, term: &IRSpine, es: ES, position: &[Position]
 }
 
 fn _to_rules(state: Vec<(&mut Build, &IRSpine, ES, Vec<Position>)>, owned_linked: &mut Vec<S<Linked>>, owned_bindings: &mut Vec<S<Indexed<S<Bind>>>>,
-        binds: &mut HashMap<W<Bind>, Vec<Position>>, tokens: &mut Vec<Token>) {
+        binds: &mut BindMap, tokens: &mut Vec<Token>) {
     // Partition by the head `Bind`.
     let mut map: HashMap<W<Bind>, Vec<(&mut Build, &IRSpine, ES, Vec<Position>)>> = HashMap::new();
     for (build, term, es, position) in state.into_iter() {
@@ -163,7 +163,7 @@ fn _to_rules(state: Vec<(&mut Build, &IRSpine, ES, Vec<Position>)>, owned_linked
 
 /// `position` is the path of the declaration whose rules these are.
 pub fn to_rules(rules: &Vec<IRRule>, es: &ES, owned_linked: &mut Vec<S<Linked>>, owned_bindings: &mut Vec<S<Indexed<S<Bind>>>>,
-        position: &[Position], binds: &mut HashMap<W<Bind>, Vec<Position>>, tokens: &mut Vec<Token>) -> Vec<Rule> {
+        position: &[Position], binds: &mut BindMap, tokens: &mut Vec<Token>) -> Vec<Rule> {
     let mut owned: Vec<Build> = rules.iter().map(|rule|{
         let mut arguments: HashSet<String> = HashSet::new();
         // TODO ensure that params are set to Vec::new()

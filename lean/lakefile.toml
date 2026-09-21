@@ -14,3 +14,8 @@ rev = "v4.34.0"
 
 [[lean_lib]]
 name = "Test"
+
+[[lean_exe]]
+name = "mathlib_eval"
+root = "MathlibEval"
+supportInterpreter = true

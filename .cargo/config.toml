@@ -3,3 +3,7 @@ rustflags = [
   "-C", "link-arg=-Wl,-install_name,@loader_path/libcanonical_lean.dylib",
   "-C", "link-arg=-Wl,-rpath,@loader_path"
 ]
+
+[env]
+LIBTORCH_USE_PYTORCH = "1"
+LIBTORCH_BYPASS_VERSION_CHECK = "1"

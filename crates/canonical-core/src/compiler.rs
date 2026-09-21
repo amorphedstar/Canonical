@@ -5,6 +5,11 @@ use arc_swap::ArcSwap;
 use rustc_hash::FxHashMap as HashMap;
 use once_cell::sync::Lazy;
 use std::iter;
+use std::collections::HashSet;
+
+/// Unification probabilities keyed by the `Bind` of the goal and of the premise.
+/// Indices correspond to `W<Bind>` from the compiled problem, never to names.
+pub type BindScores = std::collections::HashMap<W<Bind>, std::collections::HashMap<W<Bind>, f64>>;
 
 #[derive(Clone, Copy)]
 pub struct CompilationInfo {
@@ -71,7 +76,49 @@ pub fn unify(goal: Term, premise: Term, depth: u32) -> bool {
     }
 }
 
-pub fn compile(typ: Type, unifications_answer: Option<std::collections::HashMap<String, std::collections::HashMap<String, f64>>>) {
+fn lookup_probability(scores: Option<&BindScores>, goal: &W<Bind>, premise: &W<Bind>) -> f64 {
+    scores
+        .and_then(|s| s.get(goal))
+        .and_then(|row| row.get(premise))
+        .copied()
+        .unwrap_or(1.0)
+}
+
+/// Goal/premise polarity walk, kept alive so `W<Bind>` pointers remain valid.
+pub struct CompilationGoals {
+    pub goals: Vec<(Type, Vec<(Type, Index)>)>,
+    _owned_linked: Vec<S<Linked>>,
+    _owned_metas: Vec<Vec<S<Meta>>>,
+}
+
+impl CompilationGoals {
+    pub fn collect(typ: Type) -> Self {
+        let mut goals = Vec::new();
+        let mut owned_linked = Vec::new();
+        let mut owned_metas = Vec::new();
+        get_compilation_info(typ, &mut goals, Polarity::Goal, &mut owned_linked, &mut owned_metas);
+        Self { goals, _owned_linked: owned_linked, _owned_metas: owned_metas }
+    }
+
+    pub fn goal_binds(&self) -> Vec<W<Bind>> {
+        self.goals.iter().map(|g| g.0.2.clone()).collect()
+    }
+
+    pub fn premise_binds(&self) -> Vec<W<Bind>> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for g in &self.goals {
+            for (premise, _) in &g.1 {
+                if seen.insert(premise.2.clone()) {
+                    out.push(premise.2.clone());
+                }
+            }
+        }
+        out
+    }
+}
+
+pub fn compile(typ: Type, unifications_answer: Option<&BindScores>) {
     let mut goals = Vec::new();
     let mut owned_linked = Vec::new();
     let mut owned_metas = Vec::new();
@@ -94,17 +141,7 @@ pub fn compile(typ: Type, unifications_answer: Option<std::collections::HashMap<
                     //         continue
                     //     }
                     // }
-                    let probability = unifications_answer.as_ref().map(|x| {
-                        if !x.contains_key(&goal.0.2.borrow().name) {
-                            println!("{:?}", x);
-                            println!("missing key \"{}\"", &goal.0.2.borrow().name)
-                        }
-                        if !x[&goal.0.2.borrow().name].contains_key(&premise.0.2.borrow().name) {
-                           println!("{:?}", x);
-                           println!("missing key \"{}\" for \"{}\"", &premise.0.2.borrow().name, &goal.0.2.borrow().name)
-                        }
-                        return x[&goal.0.2.borrow().name][&premise.0.2.borrow().name]
-                    }).unwrap_or(1.0);
+                    let probability = lookup_probability(unifications_answer, &goal.0.2, &premise.0.2);
                     unifications.push((premise.1.clone(), CompilationInfo { probability }));
                     unifications_string.push(premise.0.2.borrow().name.clone());
                     // count += 1;

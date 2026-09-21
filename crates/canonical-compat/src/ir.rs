@@ -101,13 +101,39 @@ pub struct Token {
     pub declaration: Vec<Position>,
 }
 
-/// `position` extended with `steps`.
+/// Declaration sites of each `Bind`, in insertion order so sequence indices
+/// correspond to `W<Bind>` rather than names.
+#[derive(Default)]
+pub struct BindMap {
+    pub paths: HashMap<W<Bind>, Vec<Position>>,
+    pub order: Vec<W<Bind>>,
+}
+
+impl BindMap {
+    pub fn insert(&mut self, bind: W<Bind>, path: Vec<Position>) {
+        if self.paths.insert(bind.clone(), path).is_none() {
+            self.order.push(bind);
+        }
+    }
+
+    pub fn get(&self, bind: &W<Bind>) -> Option<&Vec<Position>> {
+        self.paths.get(bind)
+    }
+
+    pub fn bind_paths(&self) -> Vec<(W<Bind>, Vec<Position>)> {
+        self.order.iter().filter_map(|w| self.paths.get(w).map(|p| (w.clone(), p.clone()))).collect()
+    }
+}
+
+/// `position` extended with `steps`. Each step is one orthogonal matrix in the
+/// path embedding (`parent_vec @ M_step`); `canonical_heuristics` replays this
+/// product when scoring binds.
 pub(crate) fn extend(position: &[Position], steps: &[Position]) -> Vec<Position> {
     [position, steps].concat()
 }
 
 /// Record the declaration positions of the `bindings` of the expression at `position`.
-pub(crate) fn record_bindings(bindings: &Indexed<S<Bind>>, position: &[Position], binds: &mut HashMap<W<Bind>, Vec<Position>>) {
+pub(crate) fn record_bindings(bindings: &Indexed<S<Bind>>, position: &[Position], binds: &mut BindMap) {
     for (i, b) in bindings.params.iter().enumerate() {
         binds.insert(b.downgrade(), extend(position, &[Position::Param(i)]));
     }
@@ -265,7 +291,7 @@ impl IRSpine {
 
     /// Finds the head `DeBruijnIndex` in the `es` and creates a Meta with `bindings` and recursively converted arguments.
     pub fn to_body(&self, es: ES, bindings: S<Indexed<S<Bind>>>, owned_linked: Vec<S<Linked>>,
-            position: &[Position], binds: &mut HashMap<W<Bind>, Vec<Position>>, tokens: &mut Vec<Token>) -> Meta {
+            position: &[Position], binds: &mut BindMap, tokens: &mut Vec<Token>) -> Meta {
         let (head, bind) = es.index_of(&self.head).expect(&format!("Undeclared variable: {}", self.head));
         tokens.push(Token {
             position: position.to_vec(),
@@ -294,7 +320,7 @@ impl IRSpine {
 impl IRTerm {
     /// Return a version of `es` with `self.lets` and `params`.
     pub fn extend_es(&self, es: &ES, owned_linked: &mut Vec<S<Linked>>, params: &[IRVar],
-            position: &[Position], binds: &mut HashMap<W<Bind>, Vec<Position>>, tokens: &mut Vec<Token>) -> (ES, S<Indexed<S<Bind>>>) {
+            position: &[Position], binds: &mut BindMap, tokens: &mut Vec<Token>) -> (ES, S<Indexed<S<Bind>>>) {
         let mut bindings = S::new(Indexed {
             params: params.iter().map(|v| S::new(v.to_bind())).collect(),
             lets: self.lets.iter().map(|d| S::new(d.var.to_bind())).collect()
@@ -319,7 +345,7 @@ impl IRTerm {
     }
 
     pub fn to_term(&self, es: &ES,
-            position: &[Position], binds: &mut HashMap<W<Bind>, Vec<Position>>, tokens: &mut Vec<Token>) -> Meta {
+            position: &[Position], binds: &mut BindMap, tokens: &mut Vec<Token>) -> Meta {
         let mut owned_linked = Vec::new();
         let (es, bindings) = self.extend_es(es, &mut owned_linked, &self.params, position, binds, tokens);
         self.spine.to_body(es, bindings, owned_linked, position, binds, tokens)
@@ -339,7 +365,7 @@ impl IRTerm {
 impl IRType {
     /// Translate the root declaration of a problem, named `name` and declared at the empty path:
     /// create its `Bind` and translate this type as its `Type`.
-    pub fn to_problem(&self, name: String, binds: &mut HashMap<W<Bind>, Vec<Position>>, tokens: &mut Vec<Token>) -> (S<TypeBase>, S<Bind>) {
+    pub fn to_problem(&self, name: String, binds: &mut BindMap, tokens: &mut Vec<Token>) -> (S<TypeBase>, S<Bind>) {
         let problem_bind = S::new(Bind::new(name));
         binds.insert(problem_bind.downgrade(), Vec::new());
         let tb = S::new(self.to_type(&ES::new(), &[Position::Type], binds, tokens));
@@ -348,7 +374,7 @@ impl IRType {
 
     /// `position` is the path of this type expression, so the root caller passes `[Position::Type]`.
     pub fn to_type(&self, es: &ES,
-            position: &[Position], binds: &mut HashMap<W<Bind>, Vec<Position>>, tokens: &mut Vec<Token>) -> TypeBase {
+            position: &[Position], binds: &mut BindMap, tokens: &mut Vec<Token>) -> TypeBase {
         let codomain = self.codomain.to_term(es, position, binds, tokens);
 
         let params : Vec<Option<S<TypeBase>>> = self.params.iter().enumerate().map(|(i, t)|

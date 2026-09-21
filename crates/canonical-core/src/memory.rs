@@ -131,6 +131,7 @@ impl<T> PartialEq for W<T> {
 impl<T> Eq for W<T> {}
 
 unsafe impl<T> Send for S<T> {}
+unsafe impl<T> Send for W<T> {}
 
 impl<T> Hash for W<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {

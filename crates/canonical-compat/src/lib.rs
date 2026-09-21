@@ -16,6 +16,31 @@ use std::panic;
 use canonical_core::search::DFSResult;
 
 use crate::ai::*;
+use crate::ir::BindMap;
+use canonical_core::compiler::BindScores;
+
+fn bind_scores_from_names(
+    names: &HashMap<String, HashMap<String, f64>>,
+    binds: &BindMap,
+) -> BindScores {
+    let by_name: HashMap<String, W<Bind>> = binds
+        .order
+        .iter()
+        .map(|w| (w.borrow().name.clone(), w.clone()))
+        .collect();
+    let mut out = BindScores::new();
+    for (gname, row) in names {
+        let Some(goal) = by_name.get(gname) else { continue };
+        let mut inner = HashMap::new();
+        for (pname, p) in row {
+            if let Some(premise) = by_name.get(pname) {
+                inner.insert(premise.clone(), *p);
+            }
+        }
+        out.insert(goal.clone(), inner);
+    }
+    out
+}
 
 /// Manually construct a IRTerm body.
 #[allow(unused_macros)]
@@ -165,21 +190,19 @@ pub static LIMIT: AtomicU32 = AtomicU32::new(10000000);
 
 pub fn compare(inference: Inference, prefix: String) -> (DFSResult, DFSResult) {
     let irt = inference.problem;
-    let mut binds = HashMap::new();
+    let mut binds = BindMap::default();
     let mut tokens = Vec::new();
     let (tb, problem_bind) = irt.to_problem(prefix, &mut binds, &mut tokens);
     let mut owned_linked = Vec::new();
     LIMIT.store(10000000, Ordering::Release);
     let prover = Prover::new(tb.downgrade(), problem_bind.downgrade(), &mut owned_linked, None);
-    let result0 = prover.prove(&|term: Term| {
-        // let mut owned_linked = Vec::new();
-        // println!("{}", now.elapsed().unwrap().as_secs_f32());
-        // println!("{}", IRSpine::from_body::<false>(term.whnf::<false, ()>(&mut owned_linked, &mut ()), false));
+    let result0 = prover.prove(&|_term: Term| {
         RUN.store(false, Ordering::Relaxed);
     }, false);
     
     LIMIT.store(result0.0.steps * 10, Ordering::Release);
-    let prover = Prover::new(tb.downgrade(), problem_bind.downgrade(), &mut owned_linked, Some(inference.unifications));
+    let scores = bind_scores_from_names(&inference.unifications, &binds);
+    let prover = Prover::new(tb.downgrade(), problem_bind.downgrade(), &mut owned_linked, Some(scores));
     let result = prover.prove(&|term: Term| {
         print!("(found: {})", size(term.base));
         // let mut owned_linked = Vec::new();

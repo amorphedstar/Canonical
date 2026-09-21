@@ -8,7 +8,8 @@ use canonical_core::search::*;
 use canonical_core::memory::W;
 use std::thread;
 use std::time::Duration;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, Arc};
 use std::sync::TryLockError;
@@ -19,6 +20,8 @@ use std::panic;
 use std::sync::MutexGuard;
 use std::collections::HashMap;
 use canonical_core::compiler::*;
+use canonical_core::stats::reset;
+use canonical_heuristics::spawn_heuristic_compilation;
 // use std::fs::OpenOptions;
 // use std::io::Write;
 
@@ -516,7 +519,70 @@ where
     }
 }
 
-/// `canonical` in Lean.
+static HEURISTICS_ENABLED: AtomicBool = AtomicBool::new(true);
+static HEURISTICS_ENV_INIT: Once = Once::new();
+
+fn init_heuristics_from_env() {
+    HEURISTICS_ENV_INIT.call_once(|| {
+        if let Ok(v) = std::env::var("CANONICAL_HEURISTICS") {
+            let on = !matches!(
+                v.to_ascii_lowercase().as_str(),
+                "0" | "off" | "false" | "no" | "uniform"
+            );
+            HEURISTICS_ENABLED.store(on, Ordering::Relaxed);
+        }
+    });
+}
+
+fn heuristics_wanted() -> bool {
+    init_heuristics_from_env();
+    HEURISTICS_ENABLED.load(Ordering::Relaxed)
+}
+
+fn example_save_path(name: &str, steps: u32) -> Option<String> {
+    if heuristics_wanted() {
+        if let Ok(dir) = std::env::var("CANONICAL_SAVE_RESULTS_DIR") {
+            let _ = std::fs::create_dir_all(&dir);
+            let safe: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            return Some(format!("{dir}/{safe}.bin"));
+        }
+    }
+    if steps > 100000 {
+        Some(format!("Results/{name}.bin"))
+    } else {
+        None
+    }
+}
+
+fn start_heuristics(tb: W<TypeBase>, problem_bind: W<Bind>, tokens: &[Token], binds: &BindMap) -> thread::JoinHandle<()> {
+    spawn_heuristic_compilation(tb, problem_bind, tokens.to_vec(), binds.bind_paths())
+}
+
+/// The background heuristics thread spawned by the most recent `refine` call, if it
+/// hasn't been joined yet. It holds `W<TypeBase>`/`W<Bind>` pointers into that call's
+/// `AppState` (specifically its `_owned_tb`/`_owned_bind`/`_owned_linked`), so it must be
+/// joined *before* a later `refine` call replaces `GLOBAL_STATE` and drops that owned
+/// data out from under it -- otherwise the thread's later `compile(...)` call would read
+/// and write freed memory.
+static PENDING_REFINE_HEURISTICS: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// Lean: `setHeuristicsEnabled`.
+#[no_mangle]
+pub unsafe extern "C" fn set_heuristics_enabled(enabled: u8) -> *const LeanResult {
+    init_heuristics_from_env();
+    HEURISTICS_ENABLED.store(enabled != 0, Ordering::Relaxed);
+    lean_io_result_mk_ok(lean_box(0))
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn canonical(typ: *const LeanType, name: *const LeanStringObject, timeout: u64, count: usize) -> *const LeanResult {
     let instance = INSTANCE.lock().unwrap_or_else(|e| e.into_inner());
@@ -526,11 +592,17 @@ pub unsafe extern "C" fn canonical(typ: *const LeanType, name: *const LeanString
 
         let arc : Arc<Mutex<_>> = Arc::new(Mutex::new(Vec::new()));
         let arc_clone = arc.clone();
-        let mut binds = HashMap::new();
+        let mut binds = BindMap::default();
         let mut tokens = Vec::new();
         let (tb, problem_bind) = ir_type.to_problem(to_string(name), &mut binds, &mut tokens);
+        reset();
         let mut owned_linked = Vec::new();
         let prover = Prover::new(tb.downgrade(), problem_bind.downgrade(), &mut owned_linked, None);
+        let infer = if heuristics_wanted() {
+            Some(start_heuristics(tb.downgrade(), problem_bind.downgrade(), &tokens, &binds))
+        } else {
+            None
+        };
 
         let worker = thread::spawn(move || {
             main(prover, tx, count, arc_clone)
@@ -538,12 +610,17 @@ pub unsafe extern "C" fn canonical(typ: *const LeanType, name: *const LeanString
 
         let _ = rx.recv_timeout(Duration::from_secs(timeout));
         RUN.store(false, Ordering::Relaxed);
+        if let Some(h) = infer {
+            let _ = h.join();
+        }
         match worker.join() {
             Ok((result, last_level_steps)) => {
                 let v = arc.lock().unwrap();
-                if result.steps > 100000 && !v.is_empty() {
-                    Example::new(to_string(name), ir_type, v[0].1.clone(), &binds, tokens)
-                        .save("Results/".to_string() + &to_string(name) + ".bin");
+                let decl = to_string(name);
+                if !v.is_empty() {
+                    if let Some(path) = example_save_path(&decl, result.steps) {
+                        Example::new(decl, ir_type, v[0].1.clone(), &binds, tokens).save(path);
+                    }
                 }
 
                 let terms = to_lean_array(&v.iter().map(|x| to_lean_term(&x.0) as *const LeanObject).collect());
@@ -580,12 +657,24 @@ pub unsafe extern "C" fn cancel() -> *const LeanResult {
 pub unsafe extern "C" fn refine(typ: *const LeanType) -> *const LeanResult {
     to_lean_result(None, || {
         let ir_type = to_ir_type(typ);
-        let mut binds = HashMap::new();
+        let mut binds = BindMap::default();
         let mut tokens = Vec::new();
         // The problem bind must be stored.
         let (tb_ref, problem_bind) = ir_type.to_problem("proof".to_string(), &mut binds, &mut tokens);
+        reset();
         let mut owned_linked = Vec::new();
         let prover = Prover::new(tb_ref.downgrade(), problem_bind.downgrade(), &mut owned_linked, None);
+        let infer_handle = if heuristics_wanted() {
+            Some(start_heuristics(tb_ref.downgrade(), problem_bind.downgrade(), &tokens, &binds))
+        } else {
+            None
+        };
+
+        // Join the previous call's heuristics thread now, before its owned TypeBase/Bind
+        // data is dropped below (see `PENDING_REFINE_HEURISTICS`).
+        if let Some(prev) = PENDING_REFINE_HEURISTICS.lock().unwrap().take() {
+            let _ = prev.join();
+        }
 
         let new_state = AppState {
             current: prover.meta,
@@ -597,6 +686,8 @@ pub unsafe extern "C" fn refine(typ: *const LeanType) -> *const LeanResult {
             _owned_tb: tb_ref,
             _owned_bind: problem_bind
         };
+
+        *PENDING_REFINE_HEURISTICS.lock().unwrap() = infer_handle;
 
         match GLOBAL_STATE.get() {
             None => {

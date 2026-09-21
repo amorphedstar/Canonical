@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use crate::ir::*;
-use canonical_core::core::Bind;
 use canonical_core::compiler::{GOALS, PREMISES};
-use canonical_core::memory::W;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -24,13 +22,13 @@ impl Example {
     /// Construct an `Example` for the most recently compiled problem:
     /// `goals` and `premises` are read from the statics populated by `compile`.
     pub fn new(name: String, problem: IRType, unifications: HashMap<String, HashMap<String, u32>>,
-            binds: &HashMap<W<Bind>, Vec<Position>>, tokens: Vec<Token>) -> Example {
+            binds: &BindMap, tokens: Vec<Token>) -> Example {
         Example {
             name,
             problem,
             unifications,
             tokens,
-            binds: binds.iter().map(|(b, p)| (b.borrow().name.clone(), p.clone())).collect(),
+            binds: binds.order.iter().filter_map(|b| binds.paths.get(b).map(|p| (b.borrow().name.clone(), p.clone()))).collect(),
             goals: GOALS.load().as_ref().clone(),
             premises: PREMISES.load().as_ref().clone()
         }

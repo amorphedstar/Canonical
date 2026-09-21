@@ -19,11 +19,10 @@ pub struct Prover {
 }
 
 unsafe impl Send for Prover {}
-unsafe impl Send for W<Meta> {}
 
 impl Prover {
     /// Creates a new Prover for the specified `Type`. 
-    pub fn new(tb_ref: W<TypeBase>, problem_bind: W<Bind>, owned_linked: &mut Vec<S<Linked>>, unifications: Option<std::collections::HashMap<String, std::collections::HashMap<String, f64>>>) -> Self {
+    pub fn new(tb_ref: W<TypeBase>, problem_bind: W<Bind>, owned_linked: &mut Vec<S<Linked>>, unifications: Option<crate::compiler::BindScores>) -> Self {
         let entry = &tb_ref.borrow().codomain.borrow().gamma.linked.as_ref().unwrap().borrow().node.entry;
         let node = Node { 
             entry: Entry { params_id: entry.params_id, lets_id: entry.lets_id, subst: None, 
@@ -31,7 +30,7 @@ impl Prover {
             bindings: tb_ref.borrow().codomain.borrow().gamma.linked.as_ref().unwrap().borrow().node.bindings.clone() 
         };
         let es = ES::new().append(node, owned_linked);
-        compile(Type(tb_ref.clone(), ES::new(), problem_bind.clone()), unifications);
+        compile(Type(tb_ref.clone(), ES::new(), problem_bind.clone()), unifications.as_ref());
         let ty = Type(tb_ref.clone(), es, problem_bind.clone());
         let meta = S::new(Meta::new(ty));
         Prover { next_root: meta.downgrade(), meta }
