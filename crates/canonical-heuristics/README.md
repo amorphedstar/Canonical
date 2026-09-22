@@ -34,8 +34,23 @@ backends *do* load their safetensors/TorchScript weights straight from
 `CANONICAL_HEURISTICS_WEIGHTS` at runtime, since they aren't code-generated.
 
 Inference uses Burn **NdArray** (CPU) by default. Rebuild with `--features cuda`
-to run the same burn-onnx `Model` on `Cuda<f32, i32>` (CubeCL + fusion + autotune).
+to run the same burn-onnx `Model` on `Cuda<f32, i32>` (CubeCL, no fusion/autotune).
 `canonical_lean` forwards that as `--features cuda`.
+
+CubeCL JIT-compiles a GPU kernel the first time it sees a given operation (and, for
+attention specifically, a given tiling "blueprint" derived from the sequence length --
+see `enable_cubecl_disk_cache`'s doc comment in `lib.rs` for how that was diagnosed).
+That's a multi-second cost on an empty cache, which is why `--features cuda` does
+*not* enable `fusion`/`autotune`: those JIT-compile a kernel per exact fused-graph
+shape, which never amortizes here since every proof search calls the model exactly
+once, usually at a shape it's never seen before. `HeuristicModel::load` (and
+`heuristics-bench`) instead turn on CubeCL's persistent PTX cache under
+`~/.config/cuda/` at startup, so a shape compiled once on a machine -- by any process,
+ever -- is a cache load (tens of ms) on every later run instead of a fresh compile.
+Only the very first time a given shape/kernel is seen on a fresh machine still pays
+the JIT cost. Use `--features cuda-fusion` instead for workloads that repeatedly hit
+the same few shapes (e.g. a fixed-batch eval loop), where fusion's steady-state win is
+worth its JIT cost.
 
 The previous backends remain for parity:
 - `tch` (`--features tch`): TorchScript `transformer.ts`

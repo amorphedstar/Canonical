@@ -149,6 +149,8 @@ fn main() {
     std::env::set_var("OMP_NUM_THREADS", threads.to_string());
     #[cfg(feature = "tch")]
     tch::set_num_threads(threads as i32);
+    #[cfg(feature = "cuda")]
+    canonical_heuristics::enable_cubecl_disk_cache();
 
     let cfg: canonical_heuristics::ModelConfig =
         serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();

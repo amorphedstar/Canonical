@@ -37,6 +37,8 @@ pub struct HeuristicModel {
 
 impl HeuristicModel {
     pub fn load(dir: &Path) -> Result<Self, String> {
+        #[cfg(feature = "cuda")]
+        crate::enable_cubecl_disk_cache();
         let config: ModelConfig = serde_json::from_str(
             &std::fs::read_to_string(dir.join("config.json")).map_err(|e| e.to_string())?,
         )

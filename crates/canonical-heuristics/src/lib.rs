@@ -13,6 +13,36 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 
+/// Turn on CubeCL's persistent compiled-kernel (PTX) cache under `~/.config/cuda/`, so a
+/// shape seen once on this machine (by any process, ever) skips NVRTC compilation on every
+/// later run instead of paying it fresh each time. Measured ~50x on a repeat shape (3.7s ->
+/// 71ms cold). Must run before the first CubeCL/burn-cuda call in the process, which is why
+/// `model::HeuristicModel::load` calls this as its first line; call it yourself before
+/// touching `burn_model::CanonicalTransformer<Cuda<..>>` directly (as heuristics-bench does).
+/// A no-op after the first call, and safe (just skipped, not fatal) if some other code in
+/// the process already read CubeCL's config before we got here.
+#[cfg(feature = "cuda")]
+pub fn enable_cubecl_disk_cache() {
+    use cubecl_runtime::config::{cache::CacheConfig, compilation::CompilationConfig, CubeClRuntimeConfig, RuntimeConfig};
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let config = CubeClRuntimeConfig {
+            compilation: CompilationConfig {
+                cache: Some(CacheConfig::Global),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        if std::panic::catch_unwind(|| CubeClRuntimeConfig::set(config)).is_err() {
+            eprintln!(
+                "canonical-heuristics: could not enable the CubeCL PTX cache (config already \
+                 read elsewhere) -- CUDA calls will still work, just without the cross-process \
+                 kernel cache"
+            );
+        }
+    });
+}
+
 use canonical_compat::ir::{BindMap, Position, Token};
 use canonical_core::compiler::{compile, BindScores, CompilationGoals};
 use canonical_core::core::{Bind, Type, TypeBase, ES};
