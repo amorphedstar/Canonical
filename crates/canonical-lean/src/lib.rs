@@ -520,7 +520,8 @@ pub unsafe extern "C" fn canonical(typ: *const LeanType, name: *const LeanString
 
         let arc : Arc<Mutex<Vec<IRTerm>>> = Arc::new(Mutex::new(Vec::new()));
         let arc_clone = arc.clone();
-        let (tb, problem_bind, _) = ir_type.to_problem(to_string(name));
+        let (tb, problem_bind, tokens) = ir_type.to_problem(to_string(name));
+        canonical_heuristics::start(&tokens);
         let mut owned_linked = Vec::new();
         let prover = Prover::new(tb.downgrade(), problem_bind.downgrade(), &mut owned_linked);
 
@@ -564,7 +565,8 @@ pub unsafe extern "C" fn cancel() -> *const LeanResult {
 pub unsafe extern "C" fn refine(typ: *const LeanType) -> *const LeanResult {
     to_lean_result(None, || {
         let ir_type = to_ir_type(typ);
-        let (tb_ref, problem_bind, _) = ir_type.to_problem("proof".to_string());
+        let (tb_ref, problem_bind, tokens) = ir_type.to_problem("proof".to_string());
+        canonical_heuristics::start(&tokens);
         let mut owned_linked = Vec::new();
         let prover = Prover::new(tb_ref.downgrade(), problem_bind.downgrade(), &mut owned_linked);
 
