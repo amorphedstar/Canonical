@@ -182,7 +182,6 @@ pub fn start(tokens: &Tokenization) {
             }
             let weight = run(&mut models, inputs);
             let latest = PROBLEM.lock().unwrap(); // held so `start` can't reset in between
-            println!("{:?}", weight);
             if *latest == problem {
                 WEIGHT.store(Arc::new(weight));
             }
