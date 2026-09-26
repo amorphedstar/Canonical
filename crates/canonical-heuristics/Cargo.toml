@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-canonical-compat = { path = "../canonical-compat", default-features = false }
 canonical-core = { path = "../canonical-core", default-features = false }
 burn = { version = "0.21.0", default-features = false, features = ["std", "ndarray"] }
 # The burn-onnx generated code loads its weights through `burn_store`.

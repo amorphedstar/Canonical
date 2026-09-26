@@ -1,5 +1,6 @@
 use canonical_core::core::*;
 use canonical_core::memory::{S, W};
+use canonical_heuristics::Tokenization;
 use canonical_core::search::test;
 use std::fmt;
 use serde::{Serialize, Deserialize};

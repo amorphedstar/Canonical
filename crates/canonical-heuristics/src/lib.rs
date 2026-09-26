@@ -9,11 +9,33 @@ use std::thread;
 
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor, TensorData};
-use canonical_compat::ai::Tokenization;
-use canonical_core::core::Position;
+use canonical_core::core::{Position, Bind, Polarity};
+use canonical_core::memory::W;
 use canonical_core::heuristic::WEIGHT;
 #[cfg(not(target_os = "macos"))]
 use cudarc::driver::CudaContext;
+
+pub struct Tokenization {
+    pub tokens: Vec<(Vec<Position>, W<Bind>)>,
+    pub goals: Vec<W<Bind>>,
+    pub premises: Vec<W<Bind>>
+}
+
+impl Tokenization {
+    pub fn new() -> Tokenization {
+        Tokenization { tokens: Vec::new(), goals: Vec::new(), premises: Vec::new() }
+    }
+
+    /// Record `bind` as a goal or premise by `polarity`, storing its index in the list on the bind.
+    pub fn declare(&mut self, mut bind: W<Bind>, polarity: Polarity) {
+        let list = match polarity {
+            Polarity::Goal => &mut self.goals,
+            Polarity::Premise => &mut self.premises
+        };
+        bind.borrow_mut().index = list.len();
+        list.push(bind);
+    }
+}
 
 #[allow(dead_code, clippy::all)]
 mod model {
@@ -160,6 +182,7 @@ pub fn start(tokens: &Tokenization) {
             }
             let weight = run(&mut models, inputs);
             let latest = PROBLEM.lock().unwrap(); // held so `start` can't reset in between
+            println!("{:?}", weight);
             if *latest == problem {
                 WEIGHT.store(Arc::new(weight));
             }

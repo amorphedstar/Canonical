@@ -133,7 +133,8 @@ macro_rules! P {
 #[tokio::main]
 pub async fn main() {
     let irt = IRType::load("lean/debug.json".to_string());
-    let (tb, problem_bind, _) = irt.to_problem("proof".to_string());
+    let (tb, problem_bind, tokens) = irt.to_problem("proof".to_string());
+    canonical_heuristics::start(&tokens);
     let mut owned_linked = Vec::new();
     
     let prover = Prover::new(tb.downgrade(), problem_bind.downgrade(), &mut owned_linked);
