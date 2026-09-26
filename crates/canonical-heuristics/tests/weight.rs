@@ -34,7 +34,8 @@ fn matches_checkpoint() {
             let column = premises[format!("{:?}", p.borrow().position).as_str()];
             let want = expected["weight"][row][column].as_f64().unwrap();
             let got = weight[g.borrow().index][p.borrow().index] as f64;
-            assert!((got - want).abs() < 1e-4, "{:?} ← {:?}: {got} vs {want}", g.borrow().name, p.borrow().name);
+            // On the GPU, CubeCL multiplies f32 matrices in TF32.
+            assert!((got - want).abs() < 2e-3, "{:?} ← {:?}: {got} vs {want}", g.borrow().name, p.borrow().name);
         }
     }
 }

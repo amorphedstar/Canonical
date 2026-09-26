@@ -9,3 +9,8 @@ rustflags = [
   "-C", "link-arg=-Wl,-undefined,dynamic_lookup",
   "-C", "link-arg=-Wl,-no_fixup_chains"
 ]
+
+[env]
+# The CUDA API that canonical-heuristics uses the GPU through: 12.0, which later drivers
+# still support. Otherwise cudarc takes the build machine's toolkit's, or the latest.
+CUDARC_CUDA_VERSION = "12000"

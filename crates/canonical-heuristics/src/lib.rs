@@ -1,16 +1,19 @@
 //! Fills `canonical_core::heuristic::WEIGHT` from a problem's `Tokenization` with a
 //! transformer trained in CanonicalHeuristics. Its `scripts/export_onnx.py` writes
 //! `model.onnx`, which takes the tokenization's paths and returns the weight matrix;
-//! burn-onnx compiles it in, weights included.
+//! burn-onnx compiles it in, weights included. It runs on the GPU when CUDA is available.
 
 use std::iter;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor, TensorData};
 use canonical_compat::ai::Tokenization;
 use canonical_core::core::Position;
 use canonical_core::heuristic::WEIGHT;
+#[cfg(not(target_os = "macos"))]
+use cudarc::driver::CudaContext;
 
 #[allow(dead_code, clippy::all)]
 mod model {
@@ -18,12 +21,32 @@ mod model {
     include!(concat!(env!("OUT_DIR"), "/model/model.rs"));
 }
 
-type B = burn::backend::NdArray<f32>;
+type Cpu = burn::backend::NdArray<f32>;
+/// With i32 integers, `Cuda`'s default, the model's output comes out wrong.
+#[cfg(not(target_os = "macos"))]
+type Gpu = burn::backend::Cuda<f32, i64>;
 
 /// The model saw at most this many rows (tokens plus binds) in training.
 const MAX_ROWS: usize = 5000;
 
-static MODEL: Mutex<Option<model::Model<B>>> = Mutex::new(None);
+/// The model on the GPU when CUDA works and has the memory for a problem, and otherwise
+/// on the CPU, each loaded when first needed.
+struct Models {
+    /// CUDA's primary context, which CubeCL shares, once checked for.
+    #[cfg(not(target_os = "macos"))]
+    cuda: Option<Option<Arc<CudaContext>>>,
+    #[cfg(not(target_os = "macos"))]
+    gpu: Option<model::Model<Gpu>>,
+    cpu: Option<model::Model<Cpu>>,
+}
+
+static MODELS: Mutex<Models> = Mutex::new(Models {
+    #[cfg(not(target_os = "macos"))]
+    cuda: None,
+    #[cfg(not(target_os = "macos"))]
+    gpu: None,
+    cpu: None,
+});
 static PROBLEM: Mutex<u64> = Mutex::new(0);
 
 /// A path step as the model reads it: the variant, in declaration order, and its index.
@@ -61,20 +84,61 @@ fn inputs(tokens: &Tokenization) -> Option<[TensorData; 4]> {
     }))
 }
 
-fn run(model: &mut Option<model::Model<B>>, inputs: [TensorData; 4]) -> Vec<Vec<f32>> {
+#[cfg(not(target_os = "macos"))]
+fn cuda() -> Option<Arc<CudaContext>> {
+    use cubecl_runtime::config::{cache::CacheConfig, compilation::CompilationConfig};
+    use cubecl_runtime::config::{CubeClRuntimeConfig, RuntimeConfig};
+    use cudarc::{driver::sys as cu, nvrtc::sys as nvrtc};
+    // CUDA is loaded at runtime. CubeCL panics without it, or if the driver is older than the
+    // API it uses or than NVRTC, whose code the driver then can't load.
+    let (mut driver, mut major, mut minor) = (0, 0, 0);
+    if !unsafe {
+        cu::is_culib_present()
+            && nvrtc::is_culib_present()
+            && cu::cuDriverGetVersion(&mut driver) == cu::CUresult::CUDA_SUCCESS
+            && nvrtc::nvrtcVersion(&mut major, &mut minor) == nvrtc::nvrtcResult::NVRTC_SUCCESS
+    } || driver < cu::CUDA_VERSION as i32
+        || driver < 1000 * major + 10 * minor
+    {
+        return None;
+    }
+    // Most problems' shapes need new kernels: keep them compiled across runs.
+    let compilation = CompilationConfig { cache: Some(CacheConfig::Global), ..Default::default() };
+    CubeClRuntimeConfig::set(CubeClRuntimeConfig { compilation, ..Default::default() });
+    CudaContext::new(0).ok()
+}
+
+fn forward<B: Backend>(model: &model::Model<B>, inputs: [TensorData; 4]) -> Vec<Vec<f32>> {
+    let device = Default::default();
     let [positions, declarations, goals, premises] =
-        inputs.map(|d| Tensor::<B, 3, Int>::from_data(d, &Default::default()));
-    let weight = model
-        .get_or_insert_with(model::Model::default)
-        .forward(positions, declarations, goals, premises);
+        inputs.map(|d| Tensor::<B, 3, Int>::from_data(d, &device));
+    let weight = model.forward(positions, declarations, goals, premises);
     let [_, n] = weight.dims();
-    weight.into_data().to_vec::<f32>().unwrap().chunks(n).map(<[f32]>::to_vec).collect()
+    let weight = weight.into_data().to_vec::<f32>().unwrap();
+    // Leave the GPU's memory to others between problems.
+    B::memory_cleanup(&device);
+    let _ = B::sync(&device);
+    weight.chunks(n).map(<[f32]>::to_vec).collect()
+}
+
+fn run(models: &mut Models, inputs: [TensorData; 4]) -> Vec<Vec<f32>> {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(cuda) = models.cuda.get_or_insert_with(cuda) {
+        // CubeCL panics, unrecoverably, when out of memory. It reserves memory in pages of up
+        // to a quarter of the GPU's: the attention scores (8 heads × rows² × 4 bytes) must fit
+        // in one, and everything together in under half.
+        let rows = inputs[0].shape[0] + inputs[2].shape[0] + inputs[3].shape[0];
+        if cuda.mem_get_info().is_ok_and(|(free, total)| 2 * free > total && 128 * rows * rows < total) {
+            return forward(models.gpu.get_or_insert_with(model::Model::default), inputs);
+        }
+    }
+    forward(models.cpu.get_or_insert_with(model::Model::default), inputs)
 }
 
 /// `tokens`' goal × premise weights, indexed by `Bind::index`, or `None` if the model
 /// doesn't apply.
 pub fn weight(tokens: &Tokenization) -> Option<Vec<Vec<f32>>> {
-    inputs(tokens).map(|inputs| run(&mut MODEL.lock().unwrap(), inputs))
+    inputs(tokens).map(|inputs| run(&mut MODELS.lock().unwrap(), inputs))
 }
 
 /// Resets `WEIGHT` to uniform, then sets it to `weight(tokens)` from a background thread
@@ -89,12 +153,12 @@ pub fn start(tokens: &Tokenization) {
     };
     if let Some(inputs) = inputs(tokens) {
         thread::spawn(move || {
-            let mut model = MODEL.lock().unwrap();
+            let mut models = MODELS.lock().unwrap();
             // Problems started in quick succession queue up here: only the latest runs.
             if *PROBLEM.lock().unwrap() != problem {
                 return;
             }
-            let weight = run(&mut model, inputs);
+            let weight = run(&mut models, inputs);
             let latest = PROBLEM.lock().unwrap(); // held so `start` can't reset in between
             if *latest == problem {
                 WEIGHT.store(Arc::new(weight));

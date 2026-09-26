@@ -10,6 +10,13 @@ burn = { version = "0.21.0", default-features = false, features = ["std", "ndarr
 # The burn-onnx generated code loads its weights through `burn_store`.
 burn-store = "0.21.0"
 
+# CUDA, if present, is loaded at runtime, so this builds and runs without it. The API
+# version it's built against is set in `.cargo/config.toml`.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+burn = { version = "0.21.0", default-features = false, features = ["cuda"] }
+cubecl-runtime = { version = "0.10.0", default-features = false, features = ["std"] }
+cudarc = { version = "0.19.9", default-features = false, features = ["driver", "nvrtc", "fallback-dynamic-loading"] }
+
 [build-dependencies]
 burn-onnx = "0.21.0"
 
