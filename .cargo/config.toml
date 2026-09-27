@@ -11,6 +11,6 @@ rustflags = [
 ]
 
 [env]
-# The CUDA API that canonical-heuristics uses the GPU through: 12.0, which later drivers
+# The CUDA API that canonical-core's heuristic uses the GPU through: 12.0, which later drivers
 # still support. Otherwise cudarc takes the build machine's toolkit's, or the latest.
 CUDARC_CUDA_VERSION = "12000"

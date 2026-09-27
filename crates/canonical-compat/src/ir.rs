@@ -293,13 +293,23 @@ impl IRTerm {
     }
 }
 
+/// Record `bind` in `tokens` as a goal or premise by `polarity`, storing its index in the list on the bind.
+fn declare(tokens: &mut Tokenization, mut bind: W<Bind>, polarity: Polarity) {
+    let list = match polarity {
+        Polarity::Goal => &mut tokens.goals,
+        Polarity::Premise => &mut tokens.premises
+    };
+    bind.borrow_mut().index = list.len();
+    list.push(bind);
+}
+
 impl IRType {
     /// Translate the root declaration of a problem, named `name` and declared at the empty path:
     /// create its `Bind` and translate this type as its `Type`.
     pub fn to_problem(&self, name: String) -> (S<TypeBase>, S<Bind>, Tokenization) {
-        let mut tokens = Tokenization::new();
+        let mut tokens = Tokenization::default();
         let problem_bind = S::new(Bind::new(name, Vec::new()));
-        tokens.declare(problem_bind.downgrade(), Polarity::Goal);
+        declare(&mut tokens, problem_bind.downgrade(), Polarity::Goal);
         let tb = S::new(self.to_type(&ES::new(), &[Position::Type], &mut tokens, Polarity::Goal));
         (tb, problem_bind, tokens)
     }
@@ -311,13 +321,13 @@ impl IRType {
 
         let params : Vec<Option<S<TypeBase>>> = self.params.iter().enumerate().map(|(i, t)|
             t.as_ref().map(|t| {
-                tokens.declare(codomain.bindings.borrow().params[i].downgrade(), polarity.opposite());
+                declare(tokens, codomain.bindings.borrow().params[i].downgrade(), polarity.opposite());
                 let position = &extend(position, &[Position::Param(i), Position::Type]);
                 S::new(t.to_type(&codomain.gamma, position, tokens, polarity.opposite()))
             })).collect();
         let lets : Vec<Option<S<TypeBase>>> = self.lets.iter().enumerate().map(|(i, t)|
              t.as_ref().map(|t| {
-                tokens.declare(codomain.bindings.borrow().lets[i].downgrade(), polarity.opposite());
+                declare(tokens, codomain.bindings.borrow().lets[i].downgrade(), polarity.opposite());
                 let position = &extend(position, &[Position::Let(i), Position::Type]);
                 S::new(t.to_type(&codomain.gamma, position, tokens, polarity.opposite()))
             })).collect();
