@@ -4,6 +4,7 @@
 //! included (see `build.rs`). It runs on the GPU when there is one it can use.
 
 use std::iter;
+use std::panic;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -51,11 +52,14 @@ fn step(position: &Position) -> [i64; 2] {
 /// matrix is the identity, so it doesn't change the path's encoding.
 const PAD: [i64; 2] = [7, 0];
 
-/// The model, on the GPU if there is one it can use and otherwise the CPU, loaded when
-/// first needed. The lock also keeps problems from running at once.
+/// The model, on wgpu's GPU (Metal, Vulkan or DX12), loaded when first needed. The lock
+/// also keeps problems from running at once.
 static MODEL: Lazy<Mutex<(Model, DispatchDevice)>> = Lazy::new(|| {
-    let device = gpu().unwrap_or(DispatchDevice::NdArray(Default::default()));
-    Mutex::new((Model::from_embedded(&device), device))
+    let on = |device: DispatchDevice| (Model::from_embedded(&device), device);
+    // Burn panics when wgpu has no adapter at all, not even a software one: use the CPU.
+    let model = panic::catch_unwind(|| on(DispatchDevice::default()))
+        .unwrap_or_else(|_| on(DispatchDevice::NdArray(Default::default())));
+    Mutex::new(model)
 });
 
 /// The model's inputs for `tokens`, or `None` if it has no premises or is too big.
@@ -78,42 +82,6 @@ fn inputs(tokens: &Tokenization) -> Option<[TensorData; 4]> {
             .collect();
         TensorData::new(data, [paths.len(), length, 2])
     }))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn gpu() -> Option<DispatchDevice> {
-    use cubecl_runtime::config::{cache::CacheConfig, compilation::CompilationConfig};
-    use cubecl_runtime::config::{CubeClRuntimeConfig, RuntimeConfig};
-    use cudarc::{driver::sys as cu, driver::CudaContext, nvrtc::sys as nvrtc};
-    // CUDA is loaded at runtime. CubeCL panics without it, or if the driver is older than the
-    // API it uses or than NVRTC, whose code the driver then can't load.
-    let (mut driver, mut major, mut minor) = (0, 0, 0);
-    if !unsafe {
-        cu::is_culib_present()
-            && nvrtc::is_culib_present()
-            && cu::cuDriverGetVersion(&mut driver) == cu::CUresult::CUDA_SUCCESS
-            && nvrtc::nvrtcVersion(&mut major, &mut minor) == nvrtc::nvrtcResult::NVRTC_SUCCESS
-    } || driver < cu::CUDA_VERSION as i32
-        || driver < 1000 * major + 10 * minor
-    {
-        return None;
-    }
-    // CubeCL panics, unrecoverably, when out of memory. It reserves memory in pages of up
-    // to a quarter of the GPU's: the attention scores (8 heads × rows² × 4 bytes) must fit
-    // in one, and everything together in under half.
-    let (free, total) = CudaContext::new(0).ok()?.mem_get_info().ok()?;
-    if 2 * free < total || 128 * MAX_ROWS * MAX_ROWS > total {
-        return None;
-    }
-    // Most problems' shapes need new kernels: keep them compiled across runs.
-    let compilation = CompilationConfig { cache: Some(CacheConfig::Global), ..Default::default() };
-    CubeClRuntimeConfig::set(CubeClRuntimeConfig { compilation, ..Default::default() });
-    Some(DispatchDevice::Cuda(Default::default()))
-}
-
-#[cfg(target_os = "macos")]
-fn gpu() -> Option<DispatchDevice> {
-    Some(DispatchDevice::Metal(Default::default()))
 }
 
 fn run((model, device): &(Model, DispatchDevice), inputs: [TensorData; 4]) -> Vec<Vec<f32>> {
