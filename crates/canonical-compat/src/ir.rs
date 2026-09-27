@@ -1,12 +1,11 @@
 use canonical_core::core::*;
 use canonical_core::memory::{S, W};
-use canonical_heuristics::Tokenization;
+use canonical_core::ai::Tokenization;
 use canonical_core::search::test;
 use std::fmt;
 use serde::{Serialize, Deserialize};
 use std::fs::File;
 use crate::reduction::*;
-use crate::ai::*;
 use canonical_core::stats::SearchInfo;
 use std::any::Any;
 

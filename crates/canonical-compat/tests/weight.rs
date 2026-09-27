@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use canonical_compat::ir::IRType;
-use canonical_core::heuristic::WEIGHT;
+use canonical_core::heuristic::WEIGHTS;
 use serde_json::Value;
 
 const DIR: &str = env!("CARGO_MANIFEST_DIR");
@@ -16,7 +16,7 @@ const DIR: &str = env!("CARGO_MANIFEST_DIR");
 fn matches_checkpoint() {
     let (_tb, _bind, tokens) =
         IRType::load(format!("{DIR}/tests/problem.json")).to_problem("problem".to_string());
-    let weight = canonical_heuristics::weight(&tokens).unwrap();
+    let weight = canonical_core::ai::weight(&tokens).unwrap();
 
     let expected: Value =
         serde_json::from_str(&std::fs::read_to_string(format!("{DIR}/tests/weight.json")).unwrap())
@@ -44,15 +44,15 @@ fn matches_checkpoint() {
 fn start_sets_weight() {
     let (_tb, _bind, tokens) =
         IRType::load(format!("{DIR}/tests/problem.json")).to_problem("problem".to_string());
-    canonical_heuristics::start(&tokens);
-    let want = canonical_heuristics::weight(&tokens).unwrap();
+    canonical_core::ai::start(&tokens);
+    let want = canonical_core::ai::weight(&tokens).unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(60);
-    while WEIGHT.load().is_empty() {
-        assert!(Instant::now() < deadline, "start never set WEIGHT");
+    while WEIGHTS.load().is_empty() {
+        assert!(Instant::now() < deadline, "start never set WEIGHTS");
         thread::sleep(Duration::from_millis(10));
     }
-    let got = WEIGHT.load();
+    let got = WEIGHTS.load();
     assert_eq!(got.len(), want.len());
     for (got, want) in got.iter().zip(&want) {
         assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6));

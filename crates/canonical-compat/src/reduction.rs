@@ -1,7 +1,6 @@
 use crate::*;
-use crate::ai::*;
 use canonical_core::memory::*;
-use canonical_heuristics::Tokenization;
+use canonical_core::ai::Tokenization;
 use std::collections::{HashMap, HashSet};
 
 struct Build {

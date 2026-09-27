@@ -5,7 +5,6 @@ use canonical_core::memory::S;
 pub mod ir;
 pub mod refine;
 pub mod reduction;
-pub mod ai;
 use ir::*;
 use std::time::SystemTime;
 
@@ -134,10 +133,9 @@ macro_rules! P {
 pub async fn main() {
     let irt = IRType::load("lean/debug.json".to_string());
     let (tb, problem_bind, tokens) = irt.to_problem("proof".to_string());
-    canonical_heuristics::start(&tokens);
     let mut owned_linked = Vec::new();
     
-    let prover = Prover::new(tb.downgrade(), problem_bind.downgrade(), &mut owned_linked);
+    let prover = Prover::new(tb.downgrade(), problem_bind.downgrade(), &tokens, &mut owned_linked);
     // let state = AppState {
     //     current: prover.meta,
     //     undo: Vec::new(),

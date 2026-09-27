@@ -1,7 +1,7 @@
-//! Fills `canonical_core::heuristic::WEIGHT` from a problem's `Tokenization` with a
-//! transformer trained in CanonicalHeuristics. Its `scripts/export_onnx.py` writes
-//! `model.onnx`, which takes the tokenization's paths and returns the weight matrix;
-//! burn-onnx compiles it in, weights included. It runs on the GPU when CUDA is available.
+//! Fills `WEIGHTS` from a problem's `Tokenization` with a transformer trained in
+//! CanonicalHeuristics. Its `scripts/export_onnx.py` writes `model.onnx`, which takes the
+//! tokenization's paths and returns the weight matrix; burn-onnx compiles it in, weights
+//! included (see `build.rs`). It runs on the GPU when CUDA is available.
 
 use std::iter;
 use std::sync::{Arc, Mutex};
@@ -9,11 +9,14 @@ use std::thread;
 
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor, TensorData};
-use canonical_core::core::{Position, Bind, Polarity};
-use canonical_core::memory::W;
-use canonical_core::heuristic::WEIGHT;
 #[cfg(not(target_os = "macos"))]
 use cudarc::driver::CudaContext;
+#[cfg(not(target_os = "macos"))]
+use once_cell::sync::Lazy;
+
+use crate::core::{Bind, Polarity, Position};
+use crate::heuristic::WEIGHTS;
+use crate::memory::W;
 
 pub struct Tokenization {
     pub tokens: Vec<(Vec<Position>, W<Bind>)>,
@@ -51,27 +54,8 @@ type Gpu = burn::backend::Cuda<f32, i64>;
 /// The model saw at most this many rows (tokens plus binds) in training.
 const MAX_ROWS: usize = 5000;
 
-/// The model on the GPU when CUDA works and has the memory for a problem, and otherwise
-/// on the CPU, each loaded when first needed.
-struct Models {
-    /// CUDA's primary context, which CubeCL shares, once checked for.
-    #[cfg(not(target_os = "macos"))]
-    cuda: Option<Option<Arc<CudaContext>>>,
-    #[cfg(not(target_os = "macos"))]
-    gpu: Option<model::Model<Gpu>>,
-    cpu: Option<model::Model<Cpu>>,
-}
-
-static MODELS: Mutex<Models> = Mutex::new(Models {
-    #[cfg(not(target_os = "macos"))]
-    cuda: None,
-    #[cfg(not(target_os = "macos"))]
-    gpu: None,
-    cpu: None,
-});
-static PROBLEM: Mutex<u64> = Mutex::new(0);
-
 /// A path step as the model reads it: the variant, in declaration order, and its index.
+/// The model turns each into one of 900 tokens, `offset[variant] + min(index, cap[variant])`.
 fn step(position: &Position) -> [i64; 2] {
     match *position {
         Position::Type => [0, 0],
@@ -83,6 +67,28 @@ fn step(position: &Position) -> [i64; 2] {
         Position::Arg(i) => [6, i as i64],
     }
 }
+
+/// The step that pads paths to a common length. The model maps it to a token whose
+/// matrix is the identity, so it doesn't change the path's encoding.
+const PAD: [i64; 2] = [7, 0];
+
+/// The model on each device, loaded when first needed. The lock also keeps problems
+/// from running at once.
+struct Models {
+    #[cfg(not(target_os = "macos"))]
+    gpu: Option<model::Model<Gpu>>,
+    cpu: Option<model::Model<Cpu>>,
+}
+
+static MODELS: Mutex<Models> = Mutex::new(Models {
+    #[cfg(not(target_os = "macos"))]
+    gpu: None,
+    cpu: None,
+});
+
+/// CUDA's primary context, which CubeCL shares, if CUDA works.
+#[cfg(not(target_os = "macos"))]
+static CUDA: Lazy<Option<Arc<CudaContext>>> = Lazy::new(cuda);
 
 /// The model's inputs for `tokens`, or `None` if it has no premises or is too big.
 fn inputs(tokens: &Tokenization) -> Option<[TensorData; 4]> {
@@ -100,7 +106,7 @@ fn inputs(tokens: &Tokenization) -> Option<[TensorData; 4]> {
     Some(paths.map(|paths| {
         let data: Vec<i64> = paths
             .iter()
-            .flat_map(|p| p.iter().map(step).chain(iter::repeat([7, 0])).take(length).flatten())
+            .flat_map(|p| p.iter().map(step).chain(iter::repeat(PAD)).take(length).flatten())
             .collect();
         TensorData::new(data, [paths.len(), length, 2])
     }))
@@ -145,7 +151,7 @@ fn forward<B: Backend>(model: &model::Model<B>, inputs: [TensorData; 4]) -> Vec<
 
 fn run(models: &mut Models, inputs: [TensorData; 4]) -> Vec<Vec<f32>> {
     #[cfg(not(target_os = "macos"))]
-    if let Some(cuda) = models.cuda.get_or_insert_with(cuda) {
+    if let Some(cuda) = CUDA.as_ref() {
         // CubeCL panics, unrecoverably, when out of memory. It reserves memory in pages of up
         // to a quarter of the GPU's: the attention scores (8 heads × rows² × 4 bytes) must fit
         // in one, and everything together in under half.
@@ -163,28 +169,22 @@ pub fn weight(tokens: &Tokenization) -> Option<Vec<Vec<f32>>> {
     inputs(tokens).map(|inputs| run(&mut MODELS.lock().unwrap(), inputs))
 }
 
-/// Resets `WEIGHT` to uniform, then sets it to `weight(tokens)` from a background thread
-/// unless another problem has started by then. Search reads `WEIGHT` as it goes, so it
+/// Resets `WEIGHTS` to uniform, then sets it to `weight(tokens)` from a background thread
+/// unless another problem has reset it since. Search reads `WEIGHTS` as it goes, so it
 /// needn't wait.
 pub fn start(tokens: &Tokenization) {
-    let problem = {
-        let mut problem = PROBLEM.lock().unwrap();
-        *problem += 1;
-        WEIGHT.store(Arc::new(Vec::new()));
-        *problem
-    };
-    if let Some(inputs) = inputs(tokens) {
-        thread::spawn(move || {
-            let mut models = MODELS.lock().unwrap();
-            // Problems started in quick succession queue up here: only the latest runs.
-            if *PROBLEM.lock().unwrap() != problem {
-                return;
-            }
-            let weight = run(&mut models, inputs);
-            let latest = PROBLEM.lock().unwrap(); // held so `start` can't reset in between
-            if *latest == problem {
-                WEIGHT.store(Arc::new(weight));
-            }
-        });
-    }
+    // A new allocation, so the thread can tell whether `WEIGHTS` is still this problem's.
+    let uniform = Arc::new(Vec::new());
+    WEIGHTS.store(uniform.clone());
+    let Some(inputs) = inputs(tokens) else { return };
+    thread::spawn(move || {
+        let mut models = MODELS.lock().unwrap();
+        // Problems started in quick succession queue up here: only the latest runs.
+        if !Arc::ptr_eq(&WEIGHTS.load(), &uniform) {
+            return;
+        }
+        let weight = run(&mut models, inputs);
+        println!("{:?}", weight);
+        WEIGHTS.compare_and_swap(&uniform, Arc::new(weight));
+    });
 }

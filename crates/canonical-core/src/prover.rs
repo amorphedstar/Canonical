@@ -3,6 +3,7 @@ use crate::core::*;
 use crate::memory::*;
 use crate::stats::*;
 use crate::compiler::compile;
+use crate::ai::{self, Tokenization};
 use crate::heuristic;
 use rayon::prelude::*;
 use std::sync::atomic::{Ordering, AtomicUsize};
@@ -23,8 +24,8 @@ unsafe impl Send for Prover {}
 unsafe impl Send for W<Meta> {}
 
 impl Prover {
-    /// Creates a new Prover for the specified `Type`. 
-    pub fn new(tb_ref: W<TypeBase>, problem_bind: W<Bind>, owned_linked: &mut Vec<S<Linked>>) -> Self {
+    /// Creates a new Prover for the specified `Type`, whose goals and premises are declared in `tokens`. 
+    pub fn new(tb_ref: W<TypeBase>, problem_bind: W<Bind>, tokens: &Tokenization, owned_linked: &mut Vec<S<Linked>>) -> Self {
         let entry = &tb_ref.borrow().codomain.borrow().gamma.linked.as_ref().unwrap().borrow().node.entry;
         let node = Node { 
             entry: Entry { params_id: entry.params_id, lets_id: entry.lets_id, subst: None, 
@@ -32,6 +33,7 @@ impl Prover {
             bindings: tb_ref.borrow().codomain.borrow().gamma.linked.as_ref().unwrap().borrow().node.bindings.clone() 
         };
         let es = ES::new().append(node, owned_linked);
+        ai::start(tokens);
         compile(Type(tb_ref.clone(), ES::new(), problem_bind.clone()));
         let ty = Type(tb_ref.clone(), es, problem_bind.clone());
         let meta = S::new(Meta::new(ty));

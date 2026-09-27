@@ -5,10 +5,10 @@ use crate::memory::W;
 use arc_swap::ArcSwap;
 use once_cell::sync::Lazy;
 
-pub static WEIGHT: Lazy<ArcSwap<Vec<Vec<f32>>>> = Lazy::new(|| ArcSwap::from_pointee(Vec::new()));
+pub static WEIGHTS: Lazy<ArcSwap<Vec<Vec<f32>>>> = Lazy::new(|| ArcSwap::from_pointee(Vec::new()));
 
 pub fn weight(goal: &W<Bind>, premise: &W<Bind>) -> f64 {
-    WEIGHT.load().get(goal.borrow().index)
+    WEIGHTS.load().get(goal.borrow().index)
         .and_then(|row| row.get(premise.borrow().index))
         .map_or(1.0, |w| *w as f64)
 }
