@@ -8,6 +8,7 @@ use std::panic;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use burn::tensor::backend::Backend;
 use burn::tensor::{DType, Int, Tensor, TensorData};
 use burn::{Dispatch, DispatchDevice};
 use once_cell::sync::Lazy;
@@ -90,6 +91,12 @@ fn run((model, device): &(Model, DispatchDevice), inputs: [TensorData; 4]) -> Ve
     let weight = model.forward(positions, declarations, goals, premises);
     let [_, n] = weight.dims();
     let weight = weight.into_data().to_vec::<f32>().unwrap();
+    // CubeCL keeps the memory it allocates, so without this the GPU fills up over a few dozen
+    // problems and inference then fails. `Dispatch` doesn't forward `memory_cleanup`.
+    if let DispatchDevice::Wgpu(device) = device {
+        <burn::backend::Wgpu as Backend>::memory_cleanup(device);
+    }
+    let _ = Dispatch::sync(device);
     weight.chunks(n).map(<[f32]>::to_vec).collect()
 }
 
