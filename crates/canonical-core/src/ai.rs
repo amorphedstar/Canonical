@@ -35,23 +35,23 @@ type Model = model::Model<Dispatch>;
 /// The model saw at most this many rows (tokens plus binds) in training.
 const MAX_ROWS: usize = 5000;
 
-/// A path step as the model reads it: the variant, in declaration order, and its index.
-/// The model turns each into one of 900 tokens, `offset[variant] + min(index, cap[variant])`.
-fn step(position: &Position) -> [i64; 2] {
-    match *position {
-        Position::Type => [0, 0],
-        Position::Rule(i) => [1, i as i64],
-        Position::LHS => [2, 0],
-        Position::RHS => [3, 0],
-        Position::Param(i) => [4, i as i64],
-        Position::Let(i) => [5, i as i64],
-        Position::Arg(i) => [6, i as i64],
-    }
+/// A path step as symbols, the matrices the model multiplies by in turn: `Type`, `LHS`, `RHS`
+/// are 0, 1, 2, and `Kind(i)` is Kind's "right" i + 1 times, then its "down" (3 and 7 for `Rule`,
+/// 4 and 8 `Param`, 5 and 9 `Let`, 6 and 10 `Arg`). `PAD`, the identity, pads paths to one length.
+fn step(position: &Position) -> impl Iterator<Item = i64> {
+    let (right, repeats, last) = match *position {
+        Position::Type => (0, 0, 0),
+        Position::LHS => (0, 0, 1),
+        Position::RHS => (0, 0, 2),
+        Position::Rule(i) => (3, i + 1, 7),
+        Position::Param(i) => (4, i + 1, 8),
+        Position::Let(i) => (5, i + 1, 9),
+        Position::Arg(i) => (6, i + 1, 10),
+    };
+    iter::repeat_n(right, repeats).chain([last])
 }
 
-/// The step that pads paths to a common length. The model maps it to a token whose
-/// matrix is the identity, so it doesn't change the path's encoding.
-const PAD: [i64; 2] = [7, 0];
+const PAD: i64 = 11;
 
 /// The model, on wgpu's GPU (Metal, Vulkan or DX12), loaded when first needed. The lock
 /// also keeps problems from running at once.
@@ -75,19 +75,19 @@ fn inputs(tokens: &Tokenization) -> Option<[TensorData; 4]> {
         tokens.goals.iter().map(|b| &b.borrow().position[..]).collect(),
         tokens.premises.iter().map(|b| &b.borrow().position[..]).collect(),
     ];
-    let length = paths.iter().flatten().map(|p| p.len()).max().unwrap_or(0).max(1);
+    let length = paths.iter().flatten().map(|p| p.iter().flat_map(step).count()).max().unwrap_or(0).max(1);
     Some(paths.map(|paths| {
         let data: Vec<i64> = paths
             .iter()
-            .flat_map(|p| p.iter().map(step).chain(iter::repeat(PAD)).take(length).flatten())
+            .flat_map(|p| p.iter().flat_map(step).chain(iter::repeat(PAD)).take(length))
             .collect();
-        TensorData::new(data, [paths.len(), length, 2])
+        TensorData::new(data, [paths.len(), length])
     }))
 }
 
 fn run((model, device): &(Model, DispatchDevice), inputs: [TensorData; 4]) -> Vec<Vec<f32>> {
     let [positions, declarations, goals, premises] =
-        inputs.map(|d| Tensor::<Dispatch, 3, Int>::from_data(d, (device, DType::I64)));
+        inputs.map(|d| Tensor::<Dispatch, 2, Int>::from_data(d, (device, DType::I64)));
     let weight = model.forward(positions, declarations, goals, premises);
     let [_, n] = weight.dims();
     let weight = weight.into_data().to_vec::<f32>().unwrap();
@@ -121,7 +121,6 @@ pub fn start(tokens: &Tokenization) {
             return;
         }
         let weight = run(&model, inputs);
-        // println!("{:?}", weight);
         WEIGHTS.compare_and_swap(&uniform, Arc::new(weight));
     });
 }
